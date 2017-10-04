@@ -1,0 +1,134 @@
+#!/usr/bin/perl -wT
+# checks BGP states in quagga GPLv3+ started 20110319  Matija Nalis <mnalis-perl@axe.tomsoft.hr>
+# note: "group quaggavty" to munin-node plugins and restart munin-node, or it won't have permissions
+
+use strict;
+
+my $DEBUG = 0;
+my $VTYSH = '/usr/bin/vtysh';
+$ENV{PATH} = '/bin:/sbin:/usr/bin:/usr/sbin';
+
+my @NEIGHBOUR=();
+
+
+# time can be: 00:08:27, or 33w6d22h, or 4d01h59m
+sub parse_time($)
+{
+  my ($str) = @_;
+  my $seconds = 0;
+
+  if ($str =~ /^(\d+):(\d+):(\d+)$/) { $seconds = (($1*60)+$2)*60+$3; }
+  
+  $seconds += $1*365*24*60*60 if $str =~ /(\d+)y/;	# years
+  $seconds += $1*7*24*60*60 if $str =~ /(\d+)w/;	# weeks
+  $seconds += $1*24*60*60 if $str =~ /(\d+)d/;		# days
+  $seconds += $1*60*60 if $str =~ /(\d+)h/;		# hours
+  $seconds += $1*60 if $str =~ /(\d+)m/;		# minutes
+  
+  return $seconds;
+}
+
+# parses "sh ip* bgp summary"
+sub parse_bgp($$)
+{
+  my ($ip_version, $cmd) = @_;
+  open OUTPUT, "${VTYSH} -c \"$cmd\" |" or die "can't exec $VTYSH -c \"$cmd\": $!";
+
+# fw0# sh ip bgp su
+# BGP router identifier 195.190.136.1, local AS number 25365
+# RIB entries 663729, using 61 MiB of memory
+# Peers 3, using 13 KiB of memory
+# 
+# Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+# 85.114.32.213   4 34594 2281376  141283        0    0    0 03w3d13h   344830
+# 213.147.96.68   4 35549 2267362  141282        0    0    0 03w3d13h   347676
+# 
+# Total number of neighbors 2
+# fw0# sh ipv6 bgp su
+# BGP router identifier 195.190.136.1, local AS number 25365
+# RIB entries 9684, using 908 KiB of memory
+# Peers 3, using 13 KiB of memory
+# 
+# Neighbor        V    AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+# 2a02:ac8:0:101::1
+#                 4 34594 1898410  142622        0    0    0 00:08:27     4907
+# 
+# Total number of neighbors 1
+
+  my $line = '';
+  my $head = 1;
+
+  while (<OUTPUT>) {
+          print "DBG: cur ($head): $_" if $DEBUG > 2;
+          if ($head) {		# skip all headers
+            $head = 0 if /^Neighbor/;
+            next;
+          }
+          
+          chomp;
+          $line .= $_;
+          print "DBG: line so far: $line\n" if $DEBUG > 1;
+          
+          if ($line) {		# if anything to parse
+            print "DBG: parsing: $line\n" if $DEBUG > 1;
+            my ($Neighbor, $BGP_ver, $AS, $MsgRcvd, $MsgSent, $TblVer, $InQ, $OutQ, $TimeUpDown, $PfxRcd) = split ' ', $line;
+            if ($PfxRcd) {	# unless it is multi-line 
+              print "DBG: parsed: IP=$Neighbor, AS$AS, time=$TimeUpDown, prefixes=$PfxRcd\n" if $DEBUG;
+              push @NEIGHBOUR, { ip_version => $ip_version, ip => $Neighbor, as => $AS, seconds => parse_time($TimeUpDown), prefixes => $PfxRcd };
+              $line = '';
+            }
+          }
+
+          last if /^\h*$/;	# end of data
+          last if /^Total/;	# end of data
+  }
+}
+
+
+#########################################################
+# MAIN goes here
+#########################################################
+
+
+my $cmdline = $ARGV[0] || '';
+
+if ('autoconf' eq $cmdline) {			# cmdline = autoconf
+  print -x $VTYSH ? "yes\n" : "no\n";
+  exit 0;
+}
+
+parse_bgp ('v4', 'show ip bgp summary');
+parse_bgp ('v6', 'show ipv6 bgp summary');
+
+#print Dumper(\@NEIGHBOUR);
+
+if ('config' eq $cmdline) {			# cmdline = config
+  print <<EOF
+graph_title BGP Session uptime
+graph_args --base 1000 -l 0
+graph_scale no
+graph_vlabel BGP uptime in seconds
+graph_category network
+EOF
+;
+
+  foreach my $n (@NEIGHBOUR) {
+    my $name = "IP$$n{'ip_version'}_AS$$n{'as'}";
+    print <<EOF
+${name}.label $name BGP uptime
+${name}.draw LINE2
+${name}.warning 86400:
+${name}.critical 1200:
+EOF
+;
+  }
+  exit 0;
+}
+
+
+# normal run (retrieve uptimes)
+
+foreach my $n (@NEIGHBOUR) {
+  my $name = "IP$$n{'ip_version'}_AS$$n{'as'}";
+  print "${name}.value $$n{seconds}\n";
+}

@@ -1,0 +1,111 @@
+#!/usr/bin/perl -wT
+# checks BGP IPv4/IPv6 states in quagga GPLv3+ started 20140514 Matija Nalis <mnalis-perl@axe.tomsoft.hr>
+# note: "adduser nagios quaggavty" and restart NRPE, or it won't have enough permissions to run
+
+use strict;
+my $DEBUG = 0;
+my $MIN_ADDR_v4 = 400000;	# minimum number of announced routes per IPv4 BGP peer
+my $MIN_ADDR_v6 = 10000;	# minimum number of announced routes per IPv6 BGP peer
+my @OPTIONAL_AS = (34594);	# optional AS-numbers, it will give only warning (instead of critical) if they are down
+my $CMD='vtysh -c "show bgp neighbors"';
+
+$ENV{PATH} = '/bin:/sbin:/usr/bin:/usr/sbin';
+
+open OUTPUT, "${CMD}|" or die "can't exec $CMD: $!";
+
+# BGP neighbor is 2a00:7880:100::1, remote AS 34362, local AS 25365, external link
+#  Description: Terrakom IPv6
+#   BGP version 4, remote router ID 85.94.70.118
+#   BGP state = Established, up for 01w2d10h
+#   Last read 00:00:14, hold time is 90, keepalive interval is 30 seconds
+#   Neighbor capabilities:
+#     4 Byte AS: advertised and received
+#     Route refresh: advertised and received(new)
+#     Address family IPv6 Unicast: advertised and received
+#   Message statistics:
+#     Inq depth is 0
+#     Outq depth is 0
+#                          Sent       Rcvd
+#     Opens:                  6          0
+#     Notifications:          5          0
+#     Updates:                8     335630
+#     Keepalives:         94602     107871
+#     Route Refresh:          0          2
+#     Capability:             0          0
+#     Total:              94621     443503
+#   Minimum time between advertisement runs is 30 seconds
+# 
+#  For address family: IPv6 Unicast
+#   Community attribute sent to this neighbor(both)
+#   Inbound path policy configured
+#   Outbound path policy configured
+#   Route map for incoming advertisements is *rm-terrakom-v6i
+#   Route map for outgoing advertisements is *rm-terrakom-v6o
+#   15182 accepted prefixes
+# 
+#   Connections established 6; dropped 5
+#   Last reset 01w2d10h, due to BGP Notification send
+# Local host: 2a00:7880:100::2, Local port: 179
+# Foreign host: 2a00:7880:100::1, Foreign port: 40915
+# Nexthop: 195.190.136.1
+# Nexthop global: 2a00:7880:100::2
+# Nexthop local: fe80::223:8bff:fe57:ddf8
+# BGP connection: shared network
+# Read thread: on  Write thread: off
+
+my $nagios = '';
+my $perf = '';
+my $total = 0;
+my $warning_only = 1;
+
+my $last_neighbor = undef;
+my %AS=();
+
+while (<OUTPUT>) {
+	print "DBG: line: $_" if $DEBUG > 1;
+	if (/^\s*BGP neighbor is ([0-9a-f:\.]+), remote AS (\d+)/) {
+		$last_neighbor = $1; 
+		my $as = $2;
+		$AS{$last_neighbor}{'AS'} = $as;
+		print "DBG: parsed1 AS: IP=$last_neighbor, AS$as\n" if $DEBUG;
+	}
+	next if !defined($last_neighbor);
+	
+	if (/^\s*BGP state = (\w+)/) {
+		$AS{$last_neighbor}{'state'} = $1;
+		print "DBG: parsed2 AS: state=$1\n" if $DEBUG;
+	}
+
+	if (/^\s*(\d+) accepted prefixes/) {
+		my $prefixes = $1;
+		print "DBG: parsed3 AS: prefixes=$prefixes\n" if $DEBUG;
+		my $state = $AS{$last_neighbor}{'state'};
+		my $as = $AS{$last_neighbor}{'AS'};
+		my $min_addr = ($last_neighbor =~ /:/) ? $MIN_ADDR_v6 : $MIN_ADDR_v4;
+		
+		if ($prefixes < $min_addr or $state ne 'Established') {
+			$nagios .= "$last_neighbor(AS$as) FAILED. ";
+			$warning_only = 0 unless grep {/^${as}$/} @OPTIONAL_AS;
+		}
+		$total += $prefixes;
+		
+		$perf .= "AS$as($last_neighbor)=$state/$prefixes; ";
+		
+		$last_neighbor = undef;
+	}
+}
+
+if ($total < $MIN_ADDR_v4 + $MIN_ADDR_v6) { $nagios = "Too little total prefixes: $total" }
+
+if ($nagios) {	# some error
+	if ($warning_only) {
+		print "BGP WARNING: $nagios|$perf\n";
+		exit 1;
+	} else {
+		print "BGP CRITICAL: $nagios|$perf\n";
+		exit 2;
+	}
+} else {	# everything ok
+	print "BGP OK: $total total prefixes|$perf\n";
+	exit 0;
+}
