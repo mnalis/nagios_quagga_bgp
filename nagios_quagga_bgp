@@ -53,7 +53,7 @@ while (<OUTPUT>) {
 	}
 }
 
-if ($total < $MIN_ADDR) { $nagios = "Too little total prefixes: $total" }
+if ($total < $MIN_ADDR) { $nagios .= "Too little total prefixes: $total" }
 
 if ($nagios) {	# some error
 	if ($warning_only) {
