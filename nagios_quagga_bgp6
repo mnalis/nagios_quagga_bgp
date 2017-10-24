@@ -6,7 +6,8 @@ use strict;
 my $DEBUG = 0;
 my $MIN_ADDR_v4 = 400000;	# minimum number of announced routes per IPv4 BGP peer
 my $MIN_ADDR_v6 = 10000;	# minimum number of announced routes per IPv6 BGP peer
-my @OPTIONAL_AS = (34594);	# optional AS-numbers, it will give only warning (instead of critical) if they are down
+my @OPTIONAL_AS = qw(6939);	# optional AS-numbers, it will give only warning (instead of critical) if they are down
+my @DOWN_AS = qw(34362 1886);	# do not warn if those AS-number are Idle
 my $CMD='vtysh -c "show bgp neighbors"';
 
 $ENV{PATH} = '/bin:/sbin:/usr/bin:/usr/sbin';
@@ -84,8 +85,12 @@ while (<OUTPUT>) {
 		my $min_addr = ($last_neighbor =~ /:/) ? $MIN_ADDR_v6 : $MIN_ADDR_v4;
 		
 		if ($prefixes < $min_addr or $state ne 'Established') {
-			$nagios .= "$last_neighbor(AS$as) FAILED. ";
-			$warning_only = 0 unless grep {/^${as}$/} @OPTIONAL_AS;
+			if (grep {/^${as}$/} @DOWN_AS and $state eq 'Idle') {
+				# ignore if it is allowed to be down...
+			} else {
+				$nagios .= "$last_neighbor(AS$as) FAILED. ";
+				$warning_only = 0 unless grep {/^${as}$/} @OPTIONAL_AS;
+			}
 		}
 		$total += $prefixes;
 		
@@ -95,7 +100,7 @@ while (<OUTPUT>) {
 	}
 }
 
-if ($total < $MIN_ADDR_v4 + $MIN_ADDR_v6) { $nagios = "Too little total prefixes: $total" }
+if ($total < $MIN_ADDR_v4 + $MIN_ADDR_v6) { $nagios .= "Too little total prefixes: $total" }
 
 if ($nagios) {	# some error
 	if ($warning_only) {
