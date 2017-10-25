@@ -85,7 +85,7 @@ while (<OUTPUT>) {
 		my $min_addr = ($last_neighbor =~ /:/) ? $MIN_ADDR_v6 : $MIN_ADDR_v4;
 		
 		if ($prefixes < $min_addr or $state ne 'Established') {
-			if (grep {/^${as}$/} @DOWN_AS and $state eq 'Idle') {
+			if (grep {/^${as}$/} @DOWN_AS) {
 				# ignore if it is allowed to be down...
 			} else {
 				$nagios .= "$last_neighbor(AS$as) FAILED. ";
